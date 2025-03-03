@@ -1514,6 +1514,613 @@ winrt::Windows::Foundation::IInspectable ReadLocalValueWithWorkaround(
     return value;
 }
 
+// Blur background implementation, copied from TranslucentTB.
+////////////////////////////////////////////////////////////////////////////////
+// clang-format off
+
+#include <initguid.h>
+
+#include <winrt/Windows.UI.Xaml.Hosting.h>
+
+namespace wfn = wf::Numerics;
+namespace wge = winrt::Windows::Graphics::Effects;
+namespace wuc = winrt::Windows::UI::Composition;
+namespace wuxh = wux::Hosting;
+
+template <> inline constexpr winrt::guid winrt::impl::guid_v<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>{
+    winrt::impl::guid_v<winrt::Windows::Foundation::IPropertyValue>
+};
+
+#ifndef E_BOUNDS
+#define E_BOUNDS (HRESULT)(0x8000000BL)
+#endif
+
+typedef enum MY_D2D1_GAUSSIANBLUR_OPTIMIZATION
+{
+    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_SPEED = 0,
+    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED = 1,
+    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY = 2,
+    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_FORCE_DWORD = 0xffffffff
+
+} MY_D2D1_GAUSSIANBLUR_OPTIMIZATION;
+
+////////////////////////////////////////////////////////////////////////////////
+// XamlBlurBrush.h
+#include <winrt/Windows.Foundation.Numerics.h>
+#include <winrt/Windows.UI.Composition.h>
+#include <winrt/Windows.UI.Xaml.Media.h>
+
+class XamlBlurBrush : public wux::Media::XamlCompositionBrushBaseT<XamlBlurBrush>
+{
+public:
+	XamlBlurBrush(wuc::Compositor compositor, float blurAmount, wfn::float4 tint);
+
+	void OnConnected();
+	void OnDisconnected();
+
+private:
+	wuc::Compositor m_compositor;
+	float m_blurAmount;
+	wfn::float4 m_tint;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// CompositeEffect.h
+#include <d2d1effects.h>
+#include <d2d1_1.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.Effects.h>
+// #include <windows.graphics.effects.interop.h>
+
+#include <windows.graphics.effects.h>
+#include <sdkddkver.h>
+
+#ifndef BUILD_WINDOWS
+namespace ABI {
+#endif
+namespace Windows {
+namespace Graphics {
+namespace Effects {
+
+typedef interface IGraphicsEffectSource                         IGraphicsEffectSource;
+typedef interface IGraphicsEffectD2D1Interop                    IGraphicsEffectD2D1Interop;
+
+
+typedef enum GRAPHICS_EFFECT_PROPERTY_MAPPING
+{
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_UNKNOWN,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_VECTORX,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_VECTORY,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_VECTORZ,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_VECTORW,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_RECT_TO_VECTOR4,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_RADIANS_TO_DEGREES,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_COLORMATRIX_ALPHA_MODE,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_COLOR_TO_VECTOR3, 
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_COLOR_TO_VECTOR4
+} GRAPHICS_EFFECT_PROPERTY_MAPPING;
+
+//+-----------------------------------------------------------------------------
+//
+//  Interface:
+//      IGraphicsEffectD2D1Interop
+//
+//  Synopsis:
+//      An interface providing a Interop counterpart to IGraphicsEffect
+//      and allowing for metadata queries.
+//
+//------------------------------------------------------------------------------
+
+#undef INTERFACE
+#define INTERFACE IGraphicsEffectD2D1Interop
+DECLARE_INTERFACE_IID_(IGraphicsEffectD2D1Interop, IUnknown, "2FC57384-A068-44D7-A331-30982FCF7177")
+{
+    STDMETHOD(GetEffectId)(
+        _Out_ GUID * id
+        ) PURE;
+
+    STDMETHOD(GetNamedPropertyMapping)(
+        LPCWSTR name,
+        _Out_ UINT * index,
+        _Out_ GRAPHICS_EFFECT_PROPERTY_MAPPING * mapping
+        ) PURE;
+
+    STDMETHOD(GetPropertyCount)(
+        _Out_ UINT * count
+        ) PURE;
+
+    STDMETHOD(GetProperty)(
+        UINT index,
+        _Outptr_ winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue> ** value
+        ) PURE;
+
+    STDMETHOD(GetSource)(
+        UINT index,
+        _Outptr_ IGraphicsEffectSource ** source
+        ) PURE;
+
+    STDMETHOD(GetSourceCount)(
+        _Out_ UINT * count
+        ) PURE;
+};
+
+
+} // namespace Effects
+} // namespace Graphics
+} // namespace Windows
+#ifndef BUILD_WINDOWS
+} // namespace ABI 
+#endif
+
+template <> inline constexpr winrt::guid winrt::impl::guid_v<ABI::Windows::Graphics::Effects::IGraphicsEffectD2D1Interop>{
+    0x2FC57384, 0xA068, 0x44D7, { 0xA3, 0x31, 0x30, 0x98, 0x2F, 0xCF, 0x71, 0x77 }
+};
+
+
+
+namespace awge = ABI::Windows::Graphics::Effects;
+
+struct CompositeEffect : winrt::implements<CompositeEffect, wge::IGraphicsEffect, wge::IGraphicsEffectSource, awge::IGraphicsEffectD2D1Interop>
+{
+public:
+	// IGraphicsEffectD2D1Interop
+	HRESULT STDMETHODCALLTYPE GetEffectId(GUID* id) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT* count) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetSourceCount(UINT* count) noexcept override;
+
+	// IGraphicsEffect
+	winrt::hstring Name();
+	void Name(winrt::hstring name);
+
+	std::vector<wge::IGraphicsEffectSource> Sources;
+	D2D1_COMPOSITE_MODE Mode = D2D1_COMPOSITE_MODE_SOURCE_OVER;
+private:
+	winrt::hstring m_name = L"CompositeEffect";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// CompositeEffect.cpp
+HRESULT CompositeEffect::GetEffectId(GUID* id) noexcept
+{
+	if (id == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*id = CLSID_D2D1Composite;
+	return S_OK;
+}
+
+HRESULT CompositeEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
+{
+	if (index == nullptr || mapping == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	const std::wstring_view nameView(name);
+	if (nameView == L"Mode")
+	{
+		*index = D2D1_COMPOSITE_PROP_MODE;
+		*mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+		return S_OK;
+	}
+
+	return E_INVALIDARG;
+}
+
+HRESULT CompositeEffect::GetPropertyCount(UINT* count) noexcept
+{
+	if (count == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*count = 1;
+	return S_OK;
+}
+
+HRESULT CompositeEffect::GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept try
+{
+	if (value == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	switch (index)
+	{
+		case D2D1_COMPOSITE_PROP_MODE:
+			*value = wf::PropertyValue::CreateUInt32((UINT32)Mode).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+			break;
+
+		default:
+			return E_BOUNDS;
+	}
+
+	return S_OK;
+}
+catch (...)
+{
+	return winrt::to_hresult();
+}
+
+HRESULT CompositeEffect::GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept try
+{
+	if (source == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	winrt::copy_to_abi(Sources.at(index), *reinterpret_cast<void**>(source));
+	return S_OK;
+}
+catch (...)
+{
+	return winrt::to_hresult();
+}
+
+HRESULT CompositeEffect::GetSourceCount(UINT* count) noexcept
+{
+	if (count == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*count = static_cast<UINT>(Sources.size());
+	return S_OK;
+}
+
+winrt::hstring CompositeEffect::Name()
+{
+	return m_name;
+}
+
+void CompositeEffect::Name(winrt::hstring name)
+{
+	m_name = name;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// FloodEffect.h
+#include <d2d1effects.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Numerics.h>
+#include <winrt/Windows.Graphics.Effects.h>
+// #include <windows.graphics.effects.interop.h>
+
+namespace awge = ABI::Windows::Graphics::Effects;
+
+struct FloodEffect : winrt::implements<FloodEffect, wge::IGraphicsEffect, wge::IGraphicsEffectSource, awge::IGraphicsEffectD2D1Interop>
+{
+public:
+	// IGraphicsEffectD2D1Interop
+	HRESULT STDMETHODCALLTYPE GetEffectId(GUID* id) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT* count) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetSourceCount(UINT* count) noexcept override;
+
+	// IGraphicsEffect
+	winrt::hstring Name();
+	void Name(winrt::hstring name);
+
+	wfn::float4 Color = { 0.0f, 0.0f, 0.0f, 1.0f };
+private:
+	winrt::hstring m_name = L"FloodEffect";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// FloodEffect.cpp
+HRESULT FloodEffect::GetEffectId(GUID* id) noexcept
+{
+	if (id == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*id = CLSID_D2D1Flood;
+	return S_OK;
+}
+
+HRESULT FloodEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
+{
+	if (index == nullptr || mapping == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	const std::wstring_view nameView(name);
+	if (nameView == L"Color")
+	{
+		*index = D2D1_FLOOD_PROP_COLOR;
+		*mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+		return S_OK;
+	}
+
+	return E_INVALIDARG;
+}
+
+HRESULT FloodEffect::GetPropertyCount(UINT* count) noexcept
+{
+	if (count == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*count = 1;
+	return S_OK;
+}
+
+HRESULT FloodEffect::GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept try
+{
+	if (value == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	switch (index)
+	{
+		case D2D1_FLOOD_PROP_COLOR:
+			*value = wf::PropertyValue::CreateSingleArray({ Color.x, Color.y, Color.z, Color.w }).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+			break;
+
+		default:
+			return E_BOUNDS;
+	}
+
+	return S_OK;
+}
+catch (...)
+{
+	return winrt::to_hresult();
+}
+
+HRESULT FloodEffect::GetSource(UINT, awge::IGraphicsEffectSource** source) noexcept
+{
+	if (source == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	return E_BOUNDS;
+}
+
+HRESULT FloodEffect::GetSourceCount(UINT* count) noexcept
+{
+	if (count == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*count = 0;
+	return S_OK;
+}
+
+winrt::hstring FloodEffect::Name()
+{
+	return m_name;
+}
+
+void FloodEffect::Name(winrt::hstring name)
+{
+	m_name = name;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// GaussianBlurEffect.h
+#include <d2d1effects.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.Effects.h>
+// #include <windows.graphics.effects.interop.h>
+
+namespace wge = winrt::Windows::Graphics::Effects;
+namespace awge = ABI::Windows::Graphics::Effects;
+
+struct GaussianBlurEffect : winrt::implements<GaussianBlurEffect, wge::IGraphicsEffect, wge::IGraphicsEffectSource, awge::IGraphicsEffectD2D1Interop>
+{
+public:
+	// IGraphicsEffectD2D1Interop
+	HRESULT STDMETHODCALLTYPE GetEffectId(GUID* id) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT* count) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
+	HRESULT STDMETHODCALLTYPE GetSourceCount(UINT* count) noexcept override;
+
+	// IGraphicsEffect
+	winrt::hstring Name();
+	void Name(winrt::hstring name);
+
+	wge::IGraphicsEffectSource Source;
+
+	float BlurAmount = 3.0f;
+	MY_D2D1_GAUSSIANBLUR_OPTIMIZATION Optimization = MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED;
+	D2D1_BORDER_MODE BorderMode = D2D1_BORDER_MODE_SOFT;
+private:
+	winrt::hstring m_name = L"GaussianBlurEffect";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// GaussianBlurEffect.cpp
+HRESULT GaussianBlurEffect::GetEffectId(GUID* id) noexcept
+{
+	if (id == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*id = CLSID_D2D1GaussianBlur;
+	return S_OK;
+}
+
+HRESULT GaussianBlurEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
+{
+	if (index == nullptr || mapping == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	const std::wstring_view nameView(name);
+	if (nameView == L"BlurAmount")
+	{
+		*index = D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION;
+		*mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+		return S_OK;
+	}
+	else if (nameView == L"Optimization")
+	{
+		*index = D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION;
+		*mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+		return S_OK;
+	}
+	else if (nameView == L"BorderMode")
+	{
+		*index = D2D1_GAUSSIANBLUR_PROP_BORDER_MODE;
+		*mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+		return S_OK;
+	}
+
+	return E_INVALIDARG;
+}
+
+HRESULT GaussianBlurEffect::GetPropertyCount(UINT* count) noexcept
+{
+	if (count == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*count = 3;
+	return S_OK;
+}
+
+HRESULT GaussianBlurEffect::GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept try
+{
+	if (value == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	switch (index)
+	{
+		case D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION:
+			*value = wf::PropertyValue::CreateSingle(BlurAmount).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+			break;
+
+		case D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION:
+			*value = wf::PropertyValue::CreateUInt32((UINT32)Optimization).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+			break;
+
+		case D2D1_GAUSSIANBLUR_PROP_BORDER_MODE:
+			*value = wf::PropertyValue::CreateUInt32((UINT32)BorderMode).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+			break;
+
+		default:
+			return E_BOUNDS;
+	}
+
+	return S_OK;
+}
+catch (...)
+{
+	return winrt::to_hresult();
+}
+
+HRESULT GaussianBlurEffect::GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept
+{
+	if (source == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	if (index == 0)
+	{
+		winrt::copy_to_abi(Source, *reinterpret_cast<void**>(source));
+		return S_OK;
+	}
+	else
+	{
+		return E_BOUNDS;
+	}
+}
+
+HRESULT GaussianBlurEffect::GetSourceCount(UINT* count) noexcept
+{
+	if (count == nullptr) [[unlikely]]
+	{
+		return E_INVALIDARG;
+	}
+
+	*count = 1;
+	return S_OK;
+}
+
+winrt::hstring GaussianBlurEffect::Name()
+{
+	return m_name;
+}
+
+void GaussianBlurEffect::Name(winrt::hstring name)
+{
+	m_name = name;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// XamlBlurBrush.cpp
+XamlBlurBrush::XamlBlurBrush(wuc::Compositor compositor, float blurAmount, wfn::float4 tint) :
+	m_compositor(std::move(compositor)),
+	m_blurAmount(blurAmount),
+	m_tint(tint)
+{ }
+
+void XamlBlurBrush::OnConnected()
+{
+	if (!CompositionBrush())
+	{
+		auto backdropBrush = m_compositor.CreateBackdropBrush();
+
+		auto blurEffect = winrt::make_self<GaussianBlurEffect>();
+		blurEffect->Source = wuc::CompositionEffectSourceParameter(L"backdrop");
+		blurEffect->BlurAmount = m_blurAmount;
+
+		auto floodEffect = winrt::make_self<FloodEffect>();
+		floodEffect->Color = m_tint;
+
+		auto compositeEffect = winrt::make_self<CompositeEffect>();
+		compositeEffect->Sources.push_back(*blurEffect);
+		compositeEffect->Sources.push_back(*floodEffect);
+		compositeEffect->Mode = D2D1_COMPOSITE_MODE_SOURCE_OVER;
+
+		auto factory = m_compositor.CreateEffectFactory(*compositeEffect);
+		auto blurBrush = factory.CreateBrush();
+		blurBrush.SetSourceParameter(L"backdrop", backdropBrush);
+
+		CompositionBrush(blurBrush);
+	}
+}
+
+void XamlBlurBrush::OnDisconnected()
+{
+	if (const auto brush = CompositionBrush())
+	{
+		brush.Close();
+		CompositionBrush(nullptr);
+	}
+}
+
+// clang-format on
+////////////////////////////////////////////////////////////////////////////////
+
 void SetOrClearValue(DependencyObject elementDo,
                      DependencyProperty property,
                      winrt::Windows::Foundation::IInspectable value,
@@ -1527,6 +2134,20 @@ void SetOrClearValue(DependencyObject elementDo,
             L"Windows.UI.Xaml.Shapes.Rectangle" &&
         elementDo.as<FrameworkElement>().Name() == L"BackgroundFill" &&
         property == Shapes::Shape::FillProperty()) {
+        //////////////////////////////////////////////////////////////////////////////////////////
+        float blurAmount = 10;
+        const auto tint = winrt::Windows::UI::Color{200, 100, 140, 100};
+        const wfn::float4 tintHdr = {tint.R / 255.0f, tint.G / 255.0f,
+                                     tint.B / 255.0f, tint.A / 255.0f};
+
+        auto compositor = wuxh::ElementCompositionPreview::GetElementVisual(
+                              elementDo.as<UIElement>())
+                              .Compositor();
+
+        value = winrt::make<XamlBlurBrush>(std::move(compositor), blurAmount,
+                                           tintHdr);
+        //////////////////////////////////////////////////////////////////////////////////////////
+
         auto it = std::find_if(g_delayedBackgroundFillSet.begin(),
                                g_delayedBackgroundFillSet.end(),
                                [&elementDo](const auto& it) {
